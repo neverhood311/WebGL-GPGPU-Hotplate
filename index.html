@@ -1,0 +1,519 @@
+<html>
+<head>
+	<script type="text/javascript">
+		var gl;
+		var frontTex, backTex;
+		var fixedTex;
+		var fixedArray;
+		var framebuffer, quadBuffer, quadColorBuffer, quadTextureCoord;
+		var simulateProgram, drawProgram;
+		var simVS, simFS, drawVS, drawFS;
+		var numIterations = 0;
+		var drawFixedCells = 1;
+		var iterationP;
+		var mouseIsDown = false;
+		
+		var quadArray = new Float32Array([
+			 1.0, -1.0,	//bottom-right
+			-1.0, -1.0,	//bottom-left
+			 1.0,  1.0,	//top-right
+			-1.0,  1.0	//top-left
+		]);
+		
+		var quadColorArray = new Float32Array([
+			0.0, 1.0, 0.0,
+			1.0, 0.0, 0.0,
+			0.0, 0.0, 1.0,
+			1.0, 1.0, 0.0
+		]);
+		
+		var quadTexCoordArray = new Float32Array([
+			1.0, 0.0,
+			0.0, 0.0,
+			1.0, 1.0,
+			0.0, 1.0
+		]);
+		
+		function webGLStart(){
+			var canvas = document.getElementById("hotplate_canvas");
+			initGL(canvas);
+			iterationP = document.getElementById("iterations");
+			
+			canvas.addEventListener("mousedown", mouseDown);
+			canvas.addEventListener("mouseup", mouseUp);
+			canvas.addEventListener("mousemove", mouseMove);
+			
+			initTextures();
+			
+			//create a framebuffer for rendering to the back texture
+			framebuffer = gl.createFramebuffer();
+			framebuffer.width = 512;
+			framebuffer.height = 512;
+			//set framebuffer as the current framebuffer
+			gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+			//attach backTex to framebuffer
+			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, backTex, 0);
+			//set the framebuffer back to the canvas
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+			
+			//initialize the quad buffer
+			quadBuffer = gl.createBuffer();
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+			gl.bufferData(gl.ARRAY_BUFFER, quadArray, gl.STATIC_DRAW);
+			quadBuffer.itemSize = 2;
+			quadBuffer.numItems = 4;
+			
+			//initialize the quad color buffer
+			quadColorBuffer = gl.createBuffer();
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadColorBuffer);
+			gl.bufferData(gl.ARRAY_BUFFER, quadColorArray, gl.STATIC_DRAW);
+			quadColorBuffer.itemSize = 3;
+			quadColorBuffer.numItems = 4;
+			
+			//initialize the quad texture coordinates
+			quadTextureCoord = gl.createBuffer();
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadTextureCoord);
+			gl.bufferData(gl.ARRAY_BUFFER, quadTexCoordArray, gl.STATIC_DRAW);
+			quadTextureCoord.itemSize = 2;
+			quadTextureCoord.numItems = 4;
+			
+			//initialize the shader programs
+			initShaders();
+			
+			gl.clearColor(0.0,0.0,0.0,1.0);
+			
+			tick();
+		}
+		
+		function initGL(canvas){
+			gl = canvas.getContext("webgl");
+			//enable floating-point textures
+			gl.getExtension('OES_texture_float');
+			gl.viewportWidth = canvas.width;
+			gl.viewportHeight = canvas.height;
+		}
+		
+		function initShaders(){
+			simVS = getShader(gl, "simulate-vs");
+			simFS = getShader(gl, "simulate-fs");			
+			simulateProgram = gl.createProgram();
+			gl.attachShader(simulateProgram, simVS);
+			gl.attachShader(simulateProgram, simFS);
+			gl.linkProgram(simulateProgram);
+			if(!gl.getProgramParameter(simulateProgram, gl.LINK_STATUS)){
+				alert("Could not initialize simulate shaders");
+			}
+			//pass the quad's vertex positions to the vertex shader
+			//gl.enableVertexAttribArray(gl.getAttribLocation(simulateProgram, "aVertexPosition"));
+			//find and enable aVertexPosition
+			simulateProgram.vertexPositionAttribute = gl.getAttribLocation(simulateProgram, "aVertexPosition");
+			gl.enableVertexAttribArray(simulateProgram.vertexPositionAttribute);
+			/*//find and enable aVertexColor
+			simulateProgram.vertexColorAttribute = gl.getAttribLocation(simulateProgram, "aVertexColor");
+			gl.enableVertexAttribArray(simulateProgram.vertexColorAttribute);*/
+			simulateProgram.textureCoordAttribute = gl.getAttribLocation(simulateProgram, "aTextureCoord");
+			gl.enableVertexAttribArray(simulateProgram.textureCoordAttribute);
+			//find the uSampler variable
+			simulateProgram.samplerUniform = gl.getUniformLocation(simulateProgram, "uSampler");
+			//find the fixedCellSampler variable
+			simulateProgram.fixedCellSamplerUniform = gl.getUniformLocation(simulateProgram, "fixedCellSampler");
+			
+			
+			drawVS = getShader(gl, "draw-vs");
+			drawFS = getShader(gl, "draw-fs");			
+			drawProgram = gl.createProgram();
+			gl.attachShader(drawProgram, drawVS);
+			gl.attachShader(drawProgram, drawFS);
+			gl.linkProgram(drawProgram);
+			if(!gl.getProgramParameter(drawProgram, gl.LINK_STATUS)){
+				alert("Could not initialize draw shaders");
+			}
+			//find and enable aVertexPosition
+			drawProgram.vertexPositionAttribute = gl.getAttribLocation(drawProgram, "aVertexPosition");
+			gl.enableVertexAttribArray(drawProgram.vertexPositionAttribute);
+			/*//find and enable aVertexColor
+			drawProgram.vertexColorAttribute = gl.getAttribLocation(drawProgram, "aVertexColor");
+			gl.enableVertexAttribArray(drawProgram.vertexColorAttribute);*/
+			//find and enable aTextureCoord
+			drawProgram.textureCoordAttribute = gl.getAttribLocation(drawProgram, "aTextureCoord");
+			gl.enableVertexAttribArray(drawProgram.textureCoordAttribute);
+			drawProgram.samplerUniform = gl.getUniformLocation(drawProgram, "uSampler");
+			//find the fixedCellSampler variable
+			drawProgram.fixedCellSamplerUniform = gl.getUniformLocation(drawProgram, "fixedCellSampler");
+			//find the drawFixedCells variable
+			drawProgram.drawFixedCellsUniform = gl.getUniformLocation(drawProgram, "drawFixedCells");
+		}
+		
+		function getShader(gl, id){
+			var shaderScript = document.getElementById(id);
+			if(!shaderScript){
+				return null;
+			}
+			
+			var str = "";
+			var k = shaderScript.firstChild;
+			while(k){
+				if(k.nodeType == 3){
+					str += k.textContent;
+				}
+				k = k.nextSibling;
+			}
+			
+			var shader;
+			if(shaderScript.type == "x-shader/x-fragment"){
+				shader = gl.createShader(gl.FRAGMENT_SHADER);
+			}
+			else if(shaderScript.type == "x-shader/x-vertex"){
+				shader = gl.createShader(gl.VERTEX_SHADER);
+			}
+			else{
+				return null;
+			}
+			
+			gl.shaderSource(shader, str);
+			gl.compileShader(shader);
+			
+			if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)){
+				alert(gl.getShaderInfoLog(shader));
+				return null;
+			}
+			
+			return shader;
+		}
+		
+		function initTextures(){
+			//create the front and back textures
+			frontTex = getTexture(50);
+			backTex = getTexture(50);
+			
+			//create the fixed-temperature texture
+			fixedTex = getTexture();
+			//insert fixed cell data into fixedTex
+			fixedArray = new Float32Array(512 * 512 * 4);
+			fixedArray.fill(-1);
+			//bottom row
+			//top row, left and right columns
+			for(var i = 0; i < 512; i++){
+				//left column
+				fixedArray[getIdx(0, i)] = 0;
+				//right column
+				fixedArray[getIdx(511, i)] = 0;
+				//top row
+				fixedArray[getIdx(i, 511)] = 0;
+				//bottom row
+				fixedArray[getIdx(i, 0)] = 100;
+			}
+			//special cells
+			for(var i = 0; i <= 330; i++){
+				fixedArray[getIdx(i, 400)] = 100;
+			}
+			fixedArray[getIdx(500, 200)] = 100;
+			
+			//put this new data into fixedTex
+			gl.bindTexture(gl.TEXTURE_2D, fixedTex);
+			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.FLOAT, fixedArray);
+			
+			
+			function getIdx(_x, _y){
+				return (_y * 512 + _x) * 4;
+			}
+		}
+		
+		function getTexture(_initialValue){
+			if(_initialValue === undefined){
+				_initialValue = 0;
+			}
+			//create a 512x512 array of the initial value
+			var fillArray = new Float32Array(512 * 512 * 4);
+			fillArray.fill(_initialValue);
+			var tex = gl.createTexture();
+			//make tex the current texture
+			gl.bindTexture(gl.TEXTURE_2D, tex);
+			//set the s-dimension to repeat
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+			//set the t-dimension to repeat
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+			//set the minify filter to nearest neighbor
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+			//set the magnify filter to nearest neighbor
+			gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+			//set the data format, size, and initial data
+			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.FLOAT, fillArray);
+			return tex;
+		}
+		
+		function swap(){
+			var tmp = frontTex;
+			frontTex = backTex;
+			backTex = tmp;
+		}
+		
+		function tick(){
+			//if(numIterations < 1000000)
+				requestAnimationFrame(tick);
+			
+			drawPlate();
+			for(var i = 0; i < 50; i++){
+				step();
+			}
+			iterationP.textContent = 'Iteration: ' + numIterations;
+			
+		}
+		
+		function drawPlate(){
+			//switch to the default framebuffer (the canvas object)
+			gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+			gl.viewport(0, 0, 512, 512);
+			
+			//clear the frame
+			gl.clear(gl.COLOR_BUFFER_BIT);
+			
+			//get ready to draw the quad
+			gl.useProgram(drawProgram);
+			//set the quad's vertex buffer as the current buffer
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+			//supply the vertex data to drawProgram's aVertexPosition attribute
+			gl.vertexAttribPointer(drawProgram.vertexPositionAttribute, quadBuffer.itemSize, gl.FLOAT, false, 0, 0);
+			
+			/*//set the quad's color buffer as the current buffer
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadColorBuffer);
+			//supply the color data to drawProgram's aVertexColor attribute
+			gl.vertexAttribPointer(drawProgram.vertexColorAttribute, quadColorBuffer.itemSize, gl.FLOAT, false, 0, 0);*/
+			//load the texture coordinates into the shader
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadTextureCoord);
+			gl.vertexAttribPointer(drawProgram.textureCoordAttribute, quadTextureCoord.itemSize, gl.FLOAT, false, 0, 0);
+			
+			//load the texture data into the shader
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, backTex);
+			gl.uniform1i(drawProgram.samplerUniform, 0);
+			
+			//load the fixed temperature cell data into the shader
+			gl.activeTexture(gl.TEXTURE1);
+			gl.bindTexture(gl.TEXTURE_2D, fixedTex);
+			gl.uniform1i(drawProgram.fixedCellSamplerUniform, 1);
+			
+			//set the drawFixedCellsUniform
+			gl.uniform1i(drawProgram.drawFixedCellsUniform, drawFixedCells);
+			
+			//draw the quad
+			gl.drawArrays(gl.TRIANGLE_STRIP, 0, quadBuffer.numItems);
+		}
+		
+		function step(){
+			numIterations++;
+			//switch to the texture framebuffer
+			gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+			//make sure it's reading from the back texture
+			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, backTex, 0);
+			gl.viewport(0,0,512,512);
+			gl.clear(gl.COLOR_BUFFER_BIT);
+			//use the simulate program
+			gl.useProgram(simulateProgram);
+			//set the quad's vertex buffer as the current buffer
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadBuffer);
+			//supply the vertex data to simulateProgram's aVertexPosition attribute
+			gl.vertexAttribPointer(simulateProgram.vertexPositionAttribute, quadBuffer.itemSize, gl.FLOAT, false, 0, 0);
+			//set the quad's texture coordinate buffer as the current buffer
+			gl.bindBuffer(gl.ARRAY_BUFFER, quadTextureCoord);
+			//supply the texture coordinate data to simulateProgram's aTextureCoord attribute
+			gl.vertexAttribPointer(simulateProgram.textureCoordAttribute, quadTextureCoord.itemSize, gl.FLOAT, false, 0, 0);
+			
+			//load the front texture data into the shader
+			gl.activeTexture(gl.TEXTURE0);
+			gl.bindTexture(gl.TEXTURE_2D, frontTex);
+			gl.uniform1i(simulateProgram.samplerUniform, 0);
+			
+			//load the fixed temperature cell data into the shader
+			gl.activeTexture(gl.TEXTURE1);
+			gl.bindTexture(gl.TEXTURE_2D, fixedTex);
+			gl.uniform1i(simulateProgram.fixedCellSamplerUniform, 1);
+			
+			
+			//draw the quad
+			gl.drawArrays(gl.TRIANGLE_STRIP, 0, quadBuffer.numItems);
+			
+			//swap the textures
+			swap();
+		}
+		
+		function mouseDown(e){
+			e.preventDefault();
+			//console.log(e);
+			
+			//set mouseIsDown to true
+			mouseIsDown = true;
+			
+			handleMouseEvent(e.shiftKey, e.which, e.layerX, 512 - e.layerY);
+		}
+		
+		function mouseUp(e){
+			e.preventDefault();
+			mouseIsDown = false;
+			return false;
+		}
+		
+		function mouseMove(e){
+			if(mouseIsDown){
+				handleMouseEvent(e.shiftKey, e.which, e.layerX, 512 - e.layerY);
+			}
+		}
+		
+		function handleMouseEvent(_shift, _button, _x, _y){
+			//shift-click
+			if(_shift){
+				//erase the fixed cell and its neighbors(set it to -1)
+				setFixedCell(_x, _y, -1);
+				setFixedCell(_x+1, _y+1, -1);
+				setFixedCell(_x+1, _y-1, -1);
+				setFixedCell(_x-1, _y+1, -1);
+				setFixedCell(_x-1, _y-1, -1);
+			}
+			//left-click
+			else if(_button == 1){
+				setFixedCell(_x, _y, 100);
+			}
+			//right-click
+			else if(_button == 3){
+				//set the fixed cell to 100
+				setFixedCell(_x, _y, 0);//set the fixed cell to 100
+			}
+		}
+		
+		function setFixedCell(_x, _y, _temp){
+			//set the framebuffer to framebuffer
+			gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffer);
+			//set the texture to the fixedTex
+			gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, fixedTex, 0);
+			//dump the texture data into fixedArray
+			gl.readPixels(0, 0, 512, 512, gl.RGBA, gl.FLOAT, fixedArray);
+			//set (_x, _y) to _temp
+			fixedArray[getIdx(_x, _y)] = _temp;
+			//put fixedArray back into fixedTex
+			gl.bindTexture(gl.TEXTURE_2D, fixedTex);
+			gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 512, 512, 0, gl.RGBA, gl.FLOAT, fixedArray);
+			
+			function getIdx(_x, _y){
+				return (_y * 512 + _x) * 4;
+			}
+		}
+	</script>
+	
+	<script id="simulate-vs" type="x-shader/x-vertex">
+		attribute vec3 aVertexPosition;	//the position of the vertex
+		//attribute vec4 aVertexColor;	//the color of the vertex
+		attribute vec2 aTextureCoord;
+		
+		varying vec2 v_textureCoord;		//a variable that we'll pass on to the fragment shader
+		
+		void main(){
+			gl_Position = vec4(aVertexPosition, 1.0);	//we don't need to transform the vertex
+			v_textureCoord = aTextureCoord;	//pass the coordinate through
+		}
+	</script>
+	<script id="simulate-fs" type="x-shader/x-fragment">
+		precision highp float;
+		
+		//varying vec4 v_vertexColor;
+		varying vec2 v_textureCoord;
+		uniform sampler2D uSampler;
+		//this texture contains the temperatures of fixed-temperature cells
+		uniform sampler2D fixedCellSampler;
+		
+		float getTemp(int x, int y, int _dx, int _dy){
+			//get my x and y coordinates
+			//add _x to x
+			int pixX = x + _dx;
+			//add _y to y
+			int pixY = y + _dy;
+			//convert these new coordinates into texture coordinates
+			float tex_coordS = float(pixX) / 512.0;
+			float tex_coordT = float(pixY) / 512.0;
+			//get the value at those coordinates
+			return texture2D(uSampler, vec2(tex_coordS, tex_coordT)).r;
+		}
+		
+		float getFixedTemp(int x, int y){
+			float tex_coordS = float(x) / 512.0;
+			float tex_coordT = float(y) / 512.0;
+			return texture2D(fixedCellSampler, vec2(tex_coordS, tex_coordT)).r;
+		}
+		
+		void main(){
+			int X = int(v_textureCoord.s * 512.0);
+			int Y = int(v_textureCoord.t * 512.0);
+			
+			//calculate the new temperature for the cell
+			float newTemp = ((getTemp(X, Y, 0,0) * 4.0) + getTemp(X, Y, -1, 0) + getTemp(X, Y, 1, 0) + getTemp(X, Y, 0, -1) + getTemp(X, Y, 0, 1))/8.0;
+			gl_FragColor = vec4(vec3(newTemp), 1.0);
+			
+			//reset the fixed-temperature cells
+			float fixedTemp = getFixedTemp(X, Y);
+			if(fixedTemp >= 0.0){
+				gl_FragColor = vec4(vec3(fixedTemp), 1.0);
+			}
+			
+			/*
+			//reset the fixed-temperature cells
+			if(X == 0 || X == 511 || Y == 511){
+				gl_FragColor = vec4(vec3(0.0), 1.0);
+			}
+			else if(Y == 0){
+				gl_FragColor = vec4(vec3(100.0), 1.0);
+			}
+			else if(Y == 400 && X <= 330){
+				gl_FragColor = vec4(vec3(100.0), 1.0);
+			}
+			else if(Y == 200 && X == 500){
+				gl_FragColor = vec4(vec3(100.0), 1.0);
+			}
+			*/
+			
+		}
+	</script>
+	
+	<script id="draw-vs" type="x-shader/x-vertex">
+		attribute vec3 aVertexPosition;	//the position of the vertex
+		//attribute vec4 aVertexColor;	//the color of the vertex
+		attribute vec2 aTextureCoord;	//the texture coordinate of the vertex
+		
+		varying vec2 v_textureCoord;		//a variable that we'll pass on to the fragment shader
+		
+		void main(){
+			gl_Position = vec4(aVertexPosition, 1.0);	//we don't need to transform the vertex
+			v_textureCoord = aTextureCoord;	//pass the color through
+		}
+	</script>
+	<script id="draw-fs" type="x-shader/x-fragment">
+		precision highp float;
+		
+		varying vec2 v_textureCoord;
+		
+		uniform sampler2D uSampler;
+		uniform sampler2D fixedCellSampler;
+		uniform int drawFixedCells;
+		
+		void main(){
+			gl_FragColor = vec4(v_textureCoord, 0.0, 1.0);
+			
+			vec3 temperature = texture2D(uSampler, vec2(v_textureCoord.s, v_textureCoord.t)).rgb;
+			gl_FragColor = vec4(temperature / 100.0, 1.0);
+			
+			if(drawFixedCells > 0){
+				float fixedColor = texture2D(fixedCellSampler, vec2(v_textureCoord.s, v_textureCoord.t)).r;
+				if(fixedColor >= 0.0 && fixedColor <= 50.0){
+					gl_FragColor = vec4(0.0, 0.0, 1.0, 1.0);
+				}
+				else if(fixedColor > 50.0){
+					gl_FragColor = vec4(1.0, 0.0, 0.0, 1.0);
+				}
+			}
+		}
+	</script>
+</head>
+<body onload="webGLStart();">
+	<canvas id="hotplate_canvas" width="512" height="512"></canvas>
+	<br>
+	<p id="iterations">Iteration: 0</p>
+</body>
+</html>
